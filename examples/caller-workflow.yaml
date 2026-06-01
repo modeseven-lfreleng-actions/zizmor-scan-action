@@ -31,6 +31,8 @@ jobs:
     permissions:
       contents: read
       security-events: write
+      # upload-sarif reads workflow run info on private repositories.
+      actions: read
     steps:
       - name: 'Harden runner'
         # yamllint disable-line rule:line-length
