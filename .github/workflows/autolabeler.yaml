@@ -5,7 +5,7 @@
 name: 'Autolabeler'
 
 # yamllint disable-line rule:truthy
-on:
+on:  # zizmor: ignore[dangerous-triggers] safe; see SECURITY note
   # pull_request is required for autolabeler
   pull_request:
     types:

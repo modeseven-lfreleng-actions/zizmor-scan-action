@@ -1,0 +1,90 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# Example: organisation-wide zizmor audit.
+#
+# Deploy this once and run it across repositories via an organisation
+# ruleset (a required workflow). Copy it into the organisation's `.github`
+# repository (or a designated repository) and reference it from the
+# ruleset; no per-repository file is then needed. The audit job runs with
+# `contents: read`; SARIF upload runs in a separate job that holds
+# `security-events: write`, gated to default-branch pushes.
+#
+# Pin the action to a commit SHA and record the version in a comment.
+
+name: '🌈 Zizmor Scan'
+
+# yamllint disable-line rule:truthy
+on:
+  pull_request:
+  push:
+
+permissions: {}
+
+jobs:
+  audit:
+    name: 'Audit workflows'
+    if: >-
+      github.event_name != 'push'
+      || github.ref_name == github.event.repository.default_branch
+    runs-on: 'ubuntu-latest'
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: 'Harden runner'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
+        with:
+          egress-policy: 'audit'
+
+      - name: 'Checkout repository under audit'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: 'Run zizmor audit'
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/zizmor-scan-action@0000000000000000000000000000000000000000  # vX.Y.Z
+
+      - name: 'Upload SARIF artifact'
+        # yamllint disable-line rule:line-length
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: 'zizmor-sarif'
+          path: '${{ github.workspace }}/zizmor.sarif'
+          retention-days: 5
+          if-no-files-found: 'error'
+
+  upload:
+    name: 'Publish SARIF to code scanning'
+    needs: 'audit'
+    if: >-
+      github.event_name == 'push'
+      && github.ref_name == github.event.repository.default_branch
+    runs-on: 'ubuntu-latest'
+    timeout-minutes: 5
+    permissions:
+      security-events: write
+    steps:
+      - name: 'Harden runner'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
+        with:
+          egress-policy: 'audit'
+
+      - name: 'Download SARIF artifact'
+        # yamllint disable-line rule:line-length
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: 'zizmor-sarif'
+          path: '.'
+
+      - name: 'Upload SARIF to code scanning'
+        # yamllint disable-line rule:line-length
+        uses: github/codeql-action/upload-sarif@7211b7c8077ea37d8641b6271f6a365a22a5fbfa  # v4.36.0
+        with:
+          sarif_file: 'zizmor.sarif'
+        continue-on-error: true
