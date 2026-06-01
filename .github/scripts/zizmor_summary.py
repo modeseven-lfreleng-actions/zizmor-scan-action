@@ -2,36 +2,25 @@
 # SPDX-FileCopyrightText: 2026 The Linux Foundation
 """Summarise a zizmor SARIF report for the GitHub Actions step summary.
 
-Default mode (no arguments): read the SARIF file at ``$ZIZMOR_SARIF``
-and write a human-readable markdown summary to ``$GITHUB_STEP_SUMMARY``.
-Also emit a compact listing to stdout and
-``::warning``/``::error``/``::notice`` workflow commands for the top
-findings so they surface as inline PR annotations.
+Read the SARIF file at ``$ZIZMOR_SARIF`` and write a human-readable
+markdown summary to ``$GITHUB_STEP_SUMMARY``. Also emit a compact
+listing to stdout and ``::warning``/``::error``/``::notice`` workflow
+commands for the top findings so they surface as inline PR annotations.
 
-Helper mode (``--regen-workflow``): regenerate the base64-encoded copy
-of this script that lives in ``.github/workflows/zizmor.yaml`` under
-``env.ZIZMOR_SUMMARY_B64``. The workflow file embeds the parser as
-base64 because it is invoked as a required workflow against repos that
-do not contain this script. After editing this file, run::
+Configuration is read from the environment:
 
-    python3 .github/scripts/zizmor_summary.py --regen-workflow
-
-then commit both files together.
+* ``ZIZMOR_SARIF``        path to the SARIF report (required)
+* ``ZIZMOR_TOP_N``        max findings to detail and annotate (default 10)
+* ``ZIZMOR_PERSONA``      persona label shown in the summary header
+* ``ZIZMOR_MIN_SEVERITY`` minimum severity label shown in the header
 """
-import argparse
-import base64
 import json
 import os
-import re
 import sys
 from collections import Counter
 from pathlib import Path
 from posixpath import basename
 from urllib.parse import quote
-
-# Marker used by --regen-workflow to locate the embedded base64 block.
-_B64_MARKER = "ZIZMOR_SUMMARY_B64: |"
-_B64_INDENT = " " * 12
 
 LEVEL_LABEL = {
     "error": "\u26d4 High",
@@ -249,90 +238,5 @@ def summarise() -> int:
     return 0
 
 
-def regen_workflow(
-    workflow_path: Path | None = None,
-    script_path: Path | None = None,
-) -> int:
-    """Replace the embedded base64 block in the workflow file in place.
-
-    Returns 0 if the workflow already matched (no write needed) or was
-    rewritten, and a non-zero code on hard errors (missing files,
-    missing marker block).
-    """
-    here = Path(__file__).resolve()
-    repo_root = here.parent.parent.parent
-    if script_path is None:
-        script_path = here
-    if workflow_path is None:
-        workflow_path = repo_root / ".github" / "workflows" / "zizmor.yaml"
-
-    if not script_path.is_file():
-        print(f"error: script not found: {script_path}", file=sys.stderr)
-        return 2
-    if not workflow_path.is_file():
-        print(
-            f"error: workflow not found: {workflow_path}", file=sys.stderr
-        )
-        return 2
-
-    source = script_path.read_bytes()
-    b64 = base64.b64encode(source).decode("ascii")
-    chunks = [b64[i:i + 76] for i in range(0, len(b64), 76)]
-    block = "\n".join(_B64_INDENT + c for c in chunks) + "\n"
-
-    workflow = workflow_path.read_text()
-    pattern = re.compile(
-        re.escape(_B64_MARKER)
-        + r"\n(?:"
-        + re.escape(_B64_INDENT)
-        + r"[A-Za-z0-9+/=]+\n)+",
-        re.MULTILINE,
-    )
-    m = pattern.search(workflow)
-    if m is None:
-        print(
-            "error: could not find ZIZMOR_SUMMARY_B64 block in "
-            f"{workflow_path}",
-            file=sys.stderr,
-        )
-        return 2
-
-    replacement = _B64_MARKER + "\n" + block
-    new_workflow = workflow[: m.start()] + replacement + workflow[m.end():]
-    if new_workflow == workflow:
-        print(f"unchanged: {workflow_path}")
-        return 0
-    workflow_path.write_text(new_workflow)
-    print(
-        f"rewrote {workflow_path} "
-        f"(embedded {len(source)} bytes, base64 {len(b64)} chars)"
-    )
-    return 0
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Summarise a zizmor SARIF report. With no arguments, read "
-            "$ZIZMOR_SARIF and write a markdown summary to "
-            "$GITHUB_STEP_SUMMARY. With --regen-workflow, refresh the "
-            "base64-encoded copy of this script embedded in "
-            ".github/workflows/zizmor.yaml."
-        )
-    )
-    parser.add_argument(
-        "--regen-workflow",
-        action="store_true",
-        help=(
-            "regenerate the embedded base64 in "
-            ".github/workflows/zizmor.yaml from this script and exit"
-        ),
-    )
-    args = parser.parse_args(argv)
-    if args.regen_workflow:
-        return regen_workflow()
-    return summarise()
-
-
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(summarise())

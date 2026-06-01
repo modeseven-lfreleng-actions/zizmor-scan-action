@@ -1,37 +1,203 @@
 ---
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: 2025 The Linux Foundation
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
 
-# actions-template
-name: "🛠️ Actions Template"
-description: "Description of action"
-# Any relevant notes/observations can go here
+# Composite action that runs the zizmor GitHub Actions security auditor.
+#
+# The action reads its pinned zizmor version from its own bundled
+# pyproject.toml and its summary parser from its own scripts directory,
+# both via ${{ github.action_path }} (the runner checks this action out
+# at the pinned ref for the caller). It downloads the matching attested
+# zizmor release binary, verifies its Sigstore provenance, audits the
+# caller's already-checked-out workspace in SARIF mode, and summarises.
+#
+# The caller is responsible for checking out the repository under audit
+# and for hardening the runner. SARIF upload is opt-in via upload-sarif;
+# the example workflows instead upload from a separate, least-privilege
+# job (see examples/ in this repository).
+
+name: 'Zizmor security audit'
+description: 'Audit GitHub Actions workflows with the zizmor static analyser.'
 
 inputs:
-  input:
-    description: "Description of input"
-    required: true
+  persona:
+    description: 'zizmor persona: regular, pedantic, or auditor.'
+    required: false
+    default: 'regular'
+  min-severity:
+    description: >-
+      Lowest severity reported: unknown, informational, low, medium,
+      high.
+    required: false
+    default: 'medium'
+  min-confidence:
+    description: >-
+      Lowest confidence reported: low, medium, or high. Empty audits all
+      confidences.
+    required: false
+    default: ''
+  working-directory:
+    description: 'Path within the workspace to audit.'
+    required: false
+    default: '.'
+  zizmor-version:
+    description: 'Override the bundled pin with an explicit tag (e.g. v1.25.2).'
+    required: false
+    default: ''
+  extra-args:
+    description: 'Additional raw arguments appended to the zizmor call.'
+    required: false
+    default: ''
+  upload-sarif:
+    description: 'Upload the SARIF to code scanning from within this action.'
+    required: false
+    default: 'false'
 
 outputs:
-  output:
-    description: "Description of output"
-    value: ${{ steps.code.outputs.output }}
+  sarif-file:
+    description: 'Absolute path to the generated SARIF file.'
+    value: ${{ steps.zizmor.outputs.sarif }}
 
 runs:
-  using: "composite"
+  using: 'composite'
   steps:
-    - name: "Friendly Name"
-      id: code
-      shell: bash
+    - name: 'Resolve zizmor version'
+      id: 'resolve'
+      shell: 'bash'
+      env:
+        OVERRIDE: ${{ inputs.zizmor-version }}
+        ACTION_PATH: ${{ github.action_path }}
       run: |
-        # Friendly Name
-        input="${{ inputs.input }}"
-        if [ -z "$input" ]; then
-          echo "Error: mandatory input was not set/configured ❌"
+        set -euo pipefail
+        if [ -n "${OVERRIDE}" ]; then
+          ver="${OVERRIDE#v}"
+          src='zizmor-version input'
+        else
+          ver="$(grep -oE 'zizmor==[0-9][0-9A-Za-z.+-]*' \
+            "${ACTION_PATH}/pyproject.toml" | head -n1 | sed 's/^zizmor==//')"
+          src='bundled pyproject.toml pin'
+        fi
+        if ! printf '%s' "${ver}" \
+             | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([A-Za-z0-9.+-]*)?$'; then
+          echo "error: invalid zizmor version '${ver}'" >&2
           exit 1
         fi
+        echo "tag=v${ver}" >> "$GITHUB_OUTPUT"
+        echo "Using zizmor ${ver} (from ${src})"
 
-        echo "output=$input" >> "$GITHUB_ENV"
-        echo "output=$input" >> "$GITHUB_OUTPUT"
-        echo "Action received: $input ✅"
-        echo "Action received: $input ✅" >> "$GITHUB_STEP_SUMMARY"
+    - name: 'Download and verify zizmor'
+      id: 'download'
+      shell: 'bash'
+      env:
+        GH_TOKEN: ${{ github.token }}
+        TAG: ${{ steps.resolve.outputs.tag }}
+      run: |
+        set -euo pipefail
+        # Select the release asset for the runner platform. zizmor ships
+        # gnu and darwin tarballs for x86_64 and aarch64; other platforms
+        # (for example Windows) are not supported here.
+        case "${RUNNER_OS}:${RUNNER_ARCH}" in
+          Linux:X64)   asset='zizmor-x86_64-unknown-linux-gnu.tar.gz' ;;
+          Linux:ARM64) asset='zizmor-aarch64-unknown-linux-gnu.tar.gz' ;;
+          macOS:X64)   asset='zizmor-x86_64-apple-darwin.tar.gz' ;;
+          macOS:ARM64) asset='zizmor-aarch64-apple-darwin.tar.gz' ;;
+          *)
+            echo "error: unsupported runner ${RUNNER_OS}/${RUNNER_ARCH};" \
+                 "supports Linux and macOS on x86_64 or arm64" >&2
+            exit 1
+            ;;
+        esac
+        base='https://github.com/zizmorcore/zizmor/releases/download'
+        url="${base}/${TAG}/${asset}"
+        # Work under a randomised temporary directory so nothing lands in
+        # the audited workspace. The tarball is removed after extraction;
+        # the whole directory is removed by the cleanup step.
+        work="$(mktemp -d "${RUNNER_TEMP}/zizmor.XXXXXX")"
+        echo "workdir=${work}" >> "$GITHUB_OUTPUT"
+        archive="${work}/${asset}"
+        bindir="${work}/bin"
+        mkdir -p "${bindir}"
+        curl --fail --silent --show-error --location \
+          --retry 3 --retry-delay 2 --retry-connrefused \
+          --connect-timeout 10 --max-time 120 \
+          -o "${archive}" "${url}"
+        # Verify Sigstore provenance before trusting the binary.
+        gh attestation verify "${archive}" --repo zizmorcore/zizmor
+        tar -xzf "${archive}" -C "${bindir}"
+        rm -f "${archive}"
+        bin="$(find "${bindir}" -type f -name zizmor | head -n1)"
+        if [ -z "${bin}" ]; then
+          echo "error: zizmor binary not found in archive" >&2
+          exit 1
+        fi
+        chmod +x "${bin}"
+        echo "zizmor=${bin}" >> "$GITHUB_OUTPUT"
+        "${bin}" --version
+
+    - name: 'Run zizmor (SARIF, advisory)'
+      id: 'zizmor'
+      shell: 'bash'
+      env:
+        GH_TOKEN: ${{ github.token }}
+        PERSONA: ${{ inputs.persona }}
+        MIN_SEVERITY: ${{ inputs.min-severity }}
+        MIN_CONFIDENCE: ${{ inputs.min-confidence }}
+        EXTRA_ARGS: ${{ inputs.extra-args }}
+        WORKDIR: ${{ inputs.working-directory }}
+        ZIZMOR_BIN: ${{ steps.download.outputs.zizmor }}
+      run: |
+        set -euo pipefail
+        sarif="${GITHUB_WORKSPACE}/zizmor.sarif"
+        tmp="$(mktemp)"
+        # Run from the workspace root and pass the audit target so the
+        # SARIF artifactLocation URIs stay relative to the repository
+        # root; this keeps code scanning paths and summary links correct.
+        # Build the argument list so an unset min-confidence is omitted
+        # (its deprecated "unknown" value has no effect upstream). The
+        # array always holds elements, so it stays safe under `set -u`.
+        args=(--persona "${PERSONA}" --min-severity "${MIN_SEVERITY}")
+        if [ -n "${MIN_CONFIDENCE}" ]; then
+          args+=(--min-confidence "${MIN_CONFIDENCE}")
+        fi
+        args+=(--format sarif)
+        # Word-splitting of EXTRA_ARGS is intentional (passthrough).
+        # shellcheck disable=SC2086
+        "${ZIZMOR_BIN}" "${args[@]}" ${EXTRA_ARGS} "${WORKDIR}" > "${tmp}"
+        python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "${tmp}"
+        mv "${tmp}" "${sarif}"
+        echo "sarif=${sarif}" >> "$GITHUB_OUTPUT"
+        bytes=$(wc -c < "${sarif}" | tr -d ' ')
+        echo "Wrote ${sarif} (${bytes} bytes)"
+
+    - name: 'Summarise findings'
+      if: ${{ steps.zizmor.outcome == 'success' }}
+      shell: 'bash'
+      env:
+        ZIZMOR_SARIF: ${{ steps.zizmor.outputs.sarif }}
+        ZIZMOR_PERSONA: ${{ inputs.persona }}
+        ZIZMOR_MIN_SEVERITY: ${{ inputs.min-severity }}
+        ZIZMOR_TOP_N: '10'
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        python3 "${ACTION_PATH}/.github/scripts/zizmor_summary.py"
+
+    - name: 'Upload SARIF to code scanning'
+      if: >-
+        ${{ inputs.upload-sarif == 'true'
+        && steps.zizmor.outcome == 'success' }}
+      # yamllint disable-line rule:line-length
+      uses: github/codeql-action/upload-sarif@7211b7c8077ea37d8641b6271f6a365a22a5fbfa  # v4.36.0
+      with:
+        sarif_file: ${{ steps.zizmor.outputs.sarif }}
+
+    - name: 'Clean up temporary files'
+      if: always()
+      shell: 'bash'
+      env:
+        TMP_WORKDIR: ${{ steps.download.outputs.workdir }}
+      run: |
+        set -euo pipefail
+        if [ -n "${TMP_WORKDIR:-}" ] && [ -d "${TMP_WORKDIR}" ]; then
+          rm -rf "${TMP_WORKDIR}"
+        fi
