@@ -50,6 +50,11 @@ jobs:
         uses: lfreleng-actions/zizmor-scan-action@0000000000000000000000000000000000000000  # vX.Y.Z
 
       - name: 'Upload SARIF artifact'
+        # Only needed on default-branch pushes, where the upload job
+        # consumes it; pull request runs skip the upload entirely.
+        if: >-
+          github.event_name == 'push'
+          && github.ref_name == github.event.repository.default_branch
         # yamllint disable-line rule:line-length
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
@@ -68,6 +73,9 @@ jobs:
     timeout-minutes: 5
     permissions:
       security-events: write
+      # Lets upload-sarif read workflow run information on private
+      # repositories (harmless on public ones).
+      actions: read
     steps:
       - name: 'Harden runner'
         # yamllint disable-line rule:line-length
@@ -87,4 +95,6 @@ jobs:
         uses: github/codeql-action/upload-sarif@7211b7c8077ea37d8641b6271f6a365a22a5fbfa  # v4.36.0
         with:
           sarif_file: 'zizmor.sarif'
+          # Category groups these results in code scanning.
+          category: 'zizmor'
         continue-on-error: true

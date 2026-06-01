@@ -122,10 +122,11 @@ Grant these to the calling job:
 
 <!-- markdownlint-disable MD013 -->
 
-| Permission               | Why                                                           |
-| ------------------------ | ------------------------------------------------------------- |
-| `contents: read`         | Check out the repository under audit.                         |
-| `security-events: write` | Publish SARIF to code scanning when `upload-sarif` is `true`. |
+| Permission               | Why                                                                      |
+| ------------------------ | ------------------------------------------------------------------------ |
+| `contents: read`         | Check out the repository under audit.                                    |
+| `security-events: write` | Publish SARIF to code scanning when `upload-sarif` is `true`.            |
+| `actions: read`          | Lets `upload-sarif` read run info on private repos (harmless on public). |
 
 <!-- markdownlint-enable MD013 -->
 
