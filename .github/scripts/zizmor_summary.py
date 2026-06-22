@@ -147,7 +147,10 @@ def summarise() -> int:
     total = sum(level_counts.values())
     short_sha = sha[:7] if sha else "?"
 
-    out = ["# \U0001f308 Zizmor Scan", ""]
+    title = "# \U0001f308 Zizmor Scan"
+    if repo:
+        title += f": {repo}"
+    out = [title, ""]
     if total == 0:
         out.append(f"No findings at or above `{min_severity}` \u2705")
     else:
