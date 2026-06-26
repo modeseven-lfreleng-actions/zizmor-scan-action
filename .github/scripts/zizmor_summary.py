@@ -140,8 +140,8 @@ def summarise() -> int:
     server = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
     repo = os.environ.get("GITHUB_REPOSITORY", "")
     sha = os.environ.get("GITHUB_SHA", "")
-    persona = os.environ.get("ZIZMOR_PERSONA", "regular")
-    min_severity = os.environ.get("ZIZMOR_MIN_SEVERITY", "medium")
+    persona = os.environ.get("ZIZMOR_PERSONA", "auditor")
+    min_severity = os.environ.get("ZIZMOR_MIN_SEVERITY", "informational")
 
     findings, level_counts, rule_counts = _load_findings(sarif_path)
     total = sum(level_counts.values())

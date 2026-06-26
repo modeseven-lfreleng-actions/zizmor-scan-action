@@ -23,13 +23,13 @@ inputs:
   persona:
     description: 'zizmor persona: regular, pedantic, or auditor.'
     required: false
-    default: 'regular'
+    default: 'auditor'
   min-severity:
     description: >-
       Lowest severity reported: unknown, informational, low, medium,
       high.
     required: false
-    default: 'medium'
+    default: 'informational'
   min-confidence:
     description: >-
       Lowest confidence reported: low, medium, or high. Empty audits all
