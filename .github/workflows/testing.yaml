@@ -26,10 +26,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: read
-      security-events: write
-      # upload-sarif reads workflow run info on private repositories.
-      actions: read
+      contents: read  # Read repository contents (checkout, etc.)
+      # yamllint disable-line rule:line-length
+      security-events: write  # Upload scan results to the code-scanning dashboard
+      actions: read  # upload-sarif reads run info (private repos)
     steps:
       - name: "Harden runner"
         # yamllint disable-line rule:line-length
