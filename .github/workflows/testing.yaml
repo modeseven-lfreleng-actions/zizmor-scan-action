@@ -26,10 +26,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: read  # Read repository contents (checkout, etc.)
-      # yamllint disable-line rule:line-length
-      security-events: write  # Upload scan results to the code-scanning dashboard
-      actions: read  # upload-sarif reads run info (private repos)
+      # The self-test no longer uploads SARIF (see the audit step below), so
+      # it needs only read access to the repository contents.
+      contents: read
     steps:
       - name: "Harden runner"
         # yamllint disable-line rule:line-length
@@ -46,5 +45,9 @@ jobs:
       - name: "Run zizmor audit"
         uses: "./"
         with:
-          # yamllint disable-line rule:line-length
-          upload-sarif: ${{ github.event_name == 'push' && github.ref_name == github.event.repository.default_branch }}
+          # The scheduled org-wide publisher (lfreleng-actions/.github
+          # workflow zizmor-sarif-publish.yaml) is now the single source of
+          # code-scanning SARIF for every repository, including this one. This
+          # self-test only verifies the action runs end to end, so it must not
+          # upload a second, competing analysis lineage to code scanning.
+          upload-sarif: "false"
