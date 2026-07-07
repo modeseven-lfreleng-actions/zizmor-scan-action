@@ -78,7 +78,7 @@ runs:
           src='bundled pyproject.toml pin'
         fi
         if ! printf '%s' "${ver}" \
-             | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([A-Za-z0-9.+-]*)?$'; then
+             | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.+-]+)?$'; then
           echo "error: invalid zizmor version '${ver}'" >&2
           exit 1
         fi
@@ -148,7 +148,7 @@ runs:
       run: |
         set -euo pipefail
         sarif="${GITHUB_WORKSPACE}/zizmor.sarif"
-        tmp="$(mktemp)"
+        tmp="$(mktemp "${RUNNER_TEMP}/zizmor-sarif.XXXXXX")"
         # Run from the workspace root and pass the audit target so the
         # SARIF artifactLocation URIs stay relative to the repository
         # root; this keeps code scanning paths and summary links correct.
