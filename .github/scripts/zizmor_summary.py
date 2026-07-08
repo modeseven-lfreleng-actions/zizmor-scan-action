@@ -14,12 +14,14 @@ Configuration is read from the environment:
 * ``ZIZMOR_PERSONA``      persona label shown in the summary header
 * ``ZIZMOR_MIN_SEVERITY`` minimum severity label shown in the header
 """
+
 import json
 import os
 import sys
 from collections import Counter
 from pathlib import Path
 from posixpath import basename
+from typing import Any
 from urllib.parse import quote
 
 LEVEL_LABEL = {
@@ -30,15 +32,20 @@ LEVEL_LABEL = {
 }
 LEVEL_ORDER = ["error", "warning", "note", "none"]
 WARN_CMD = {
-    "error": "error", "warning": "warning",
-    "note": "notice", "none": "notice",
+    "error": "error",
+    "warning": "warning",
+    "note": "notice",
+    "none": "notice",
 }
+MAX_MSG_LEN = 200
+
+Finding = dict[str, Any]
 
 
 def strip_rule_prefix(rid: str) -> str:
     """Drop the ``zizmor/`` prefix from a rule id for tighter tables."""
     if rid.startswith("zizmor/"):
-        return rid[len("zizmor/"):]
+        return rid[len("zizmor/") :]
     return rid
 
 
@@ -48,12 +55,7 @@ def _escape_wf_data(value: object) -> str:
     Per GitHub's workflow-command rules, ``%``, ``CR`` and ``LF`` must
     be percent-encoded in the data (post-``::``) portion.
     """
-    return (
-        str(value)
-        .replace("%", "%25")
-        .replace("\r", "%0D")
-        .replace("\n", "%0A")
-    )
+    return str(value).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
 
 
 def _escape_wf_property(value: object) -> str:
@@ -64,14 +66,10 @@ def _escape_wf_property(value: object) -> str:
     encoded so they cannot terminate the property list or the command
     prefix.
     """
-    return (
-        _escape_wf_data(value)
-        .replace(":", "%3A")
-        .replace(",", "%2C")
-    )
+    return _escape_wf_data(value).replace(":", "%3A").replace(",", "%2C")
 
 
-def _render_link(file: str, line, repo: str, sha: str, server: str) -> str:
+def _render_link(file: str, line: int | None, repo: str, sha: str, server: str) -> str:
     """Render a path:line link with the basename as visible text."""
     if not file:
         return ""
@@ -84,42 +82,59 @@ def _render_link(file: str, line, repo: str, sha: str, server: str) -> str:
     return f"[`{label}`]({url})"
 
 
-def _load_findings(sarif_path: Path):
+def _result_level(result: dict[str, Any], meta: dict[str, Any]) -> str:
+    """Resolve a result's level, falling back to the rule default."""
+    level = result.get("level")
+    if level:
+        return str(level)
+    default_cfg = meta.get("defaultConfiguration") or {}
+    return str(default_cfg.get("level", "warning"))
+
+
+def _result_location(
+    result: dict[str, Any],
+) -> tuple[str, int | None, int | None]:
+    """Extract (file, line, endline) from a SARIF result."""
+    locations = result.get("locations") or [{}]
+    ploc = locations[0].get("physicalLocation") or {}
+    artifact = ploc.get("artifactLocation") or {}
+    region = ploc.get("region") or {}
+    line = region.get("startLine")
+    endline = region.get("endLine") or line
+    return artifact.get("uri", ""), line, endline
+
+
+def _load_findings(
+    sarif_path: Path,
+) -> tuple[list[Finding], Counter[str], Counter[str]]:
     """Parse SARIF and return (findings, level_counts, rule_counts)."""
     with sarif_path.open() as fh:
         data = json.load(fh)
 
-    findings = []
-    rule_meta = {}
+    findings: list[Finding] = []
+    rule_meta: dict[str, Any] = {}
     for run in data.get("runs", []):
-        tool = run.get("tool", {}).get("driver", {})
-        for rule in tool.get("rules", []):
+        tool = run.get("tool") or {}
+        driver = tool.get("driver") or {}
+        for rule in driver.get("rules", []):
             rule_meta[rule.get("id", "")] = rule
         for result in run.get("results", []):
             rid = result.get("ruleId", "?")
-            level = (
-                result.get("level")
-                or rule_meta.get(rid, {})
-                    .get("defaultConfiguration", {})
-                    .get("level", "warning")
+            level = _result_level(result, rule_meta.get(rid) or {})
+            message = result.get("message") or {}
+            file, line, endline = _result_location(result)
+            findings.append(
+                {
+                    "rule": rid,
+                    "level": level,
+                    "msg": str(message.get("text", "")).strip(),
+                    "file": file,
+                    "line": line,
+                    "endline": endline,
+                }
             )
-            msg = (result.get("message") or {}).get("text", "").strip()
-            loc = (result.get("locations") or [{}])[0]
-            ploc = loc.get("physicalLocation", {})
-            artifact = ploc.get("artifactLocation", {}).get("uri", "")
-            region = ploc.get("region", {}) or {}
-            line = region.get("startLine")
-            endline = region.get("endLine") or line
-            findings.append({
-                "rule": rid,
-                "level": level,
-                "msg": msg,
-                "file": artifact,
-                "line": line,
-                "endline": endline,
-            })
 
-    def sort_key(f):
+    def sort_key(f: Finding) -> tuple[int, str, str, int]:
         try:
             idx = LEVEL_ORDER.index(f["level"])
         except ValueError:
@@ -127,92 +142,101 @@ def _load_findings(sarif_path: Path):
         return (idx, f["rule"], f["file"], f["line"] or 0)
 
     findings.sort(key=sort_key)
-    level_counts = Counter(f["level"] for f in findings)
-    rule_counts = Counter(f["rule"] for f in findings)
+    level_counts: Counter[str] = Counter(f["level"] for f in findings)
+    rule_counts: Counter[str] = Counter(f["rule"] for f in findings)
     return findings, level_counts, rule_counts
 
 
-def summarise() -> int:
-    """Read SARIF and write summary; return process exit code."""
-    sarif_path = Path(os.environ["ZIZMOR_SARIF"])
-    top_n = int(os.environ.get("ZIZMOR_TOP_N", "10"))
-    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
-    server = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
-    repo = os.environ.get("GITHUB_REPOSITORY", "")
+def _read_context() -> dict[str, Any]:
+    """Collect configuration and repository context from the env."""
     sha = os.environ.get("GITHUB_SHA", "")
-    persona = os.environ.get("ZIZMOR_PERSONA", "auditor")
-    min_severity = os.environ.get("ZIZMOR_MIN_SEVERITY", "informational")
+    return {
+        "sarif_path": Path(os.environ["ZIZMOR_SARIF"]),
+        "top_n": int(os.environ.get("ZIZMOR_TOP_N", "10")),
+        "summary_path": os.environ.get("GITHUB_STEP_SUMMARY"),
+        "server": os.environ.get("GITHUB_SERVER_URL", "https://github.com"),
+        "repo": os.environ.get("GITHUB_REPOSITORY", ""),
+        "sha": sha,
+        "short_sha": sha[:7] if sha else "?",
+        "persona": os.environ.get("ZIZMOR_PERSONA", "auditor"),
+        "min_severity": os.environ.get("ZIZMOR_MIN_SEVERITY", "informational"),
+    }
 
-    findings, level_counts, rule_counts = _load_findings(sarif_path)
-    total = sum(level_counts.values())
-    short_sha = sha[:7] if sha else "?"
 
+def _render_header(total: int, ctx: dict[str, Any]) -> list[str]:
+    """Render the title, finding total, and scan context lines."""
     title = "# \U0001f308 Zizmor Scan"
-    if repo:
-        title += f": {repo}"
+    if ctx["repo"]:
+        title += f": {ctx['repo']}"
     out = [title, ""]
     if total == 0:
-        out.append(f"No findings at or above `{min_severity}` \u2705")
+        out.append(f"No findings at or above `{ctx['min_severity']}` \u2705")
     else:
         out.append(
-            f"{total} finding(s) at or above `{min_severity}` \u26a0\ufe0f"
+            f"{total} finding(s) at or above `{ctx['min_severity']}` \u26a0\ufe0f"
         )
-    out.extend([
-        "",
-        f"`{repo}@{short_sha}`",
-        f"persona: `{persona}`",
-        f"min-severity: `{min_severity}`",
-        "",
-    ])
+    out.extend(
+        [
+            "",
+            f"`{ctx['repo']}@{ctx['short_sha']}`",
+            f"persona: `{ctx['persona']}`",
+            f"min-severity: `{ctx['min_severity']}`",
+            "",
+        ]
+    )
+    return out
 
-    if total > 0:
-        out.append("## Counts by severity")
-        out.append("")
-        out.append("| Severity | Count |")
-        out.append("| --- | ---: |")
-        for lvl in LEVEL_ORDER:
-            if lvl in level_counts:
-                out.append(
-                    f"| {LEVEL_LABEL.get(lvl, lvl)} | {level_counts[lvl]} |"
-                )
-        out.append("")
-        out.append("## Counts by rule")
-        out.append("")
-        out.append("| Rule | Count |")
-        out.append("| --- | ---: |")
-        for rid, n in rule_counts.most_common():
-            out.append(f"| `{strip_rule_prefix(rid)}` | {n} |")
-        out.append("")
-        shown = findings[:top_n]
-        extra = total - len(shown)
-        heading = f"## Top {len(shown)} findings"
-        if extra > 0:
-            heading += f" (of {total}; {extra} more in SARIF)"
-        out.append(heading)
-        out.append("")
-        out.append("| Severity | Rule | Location | Message |")
-        out.append("| --- | --- | --- | --- |")
-        for f in shown:
-            label = LEVEL_LABEL.get(f["level"], f["level"])
-            msg = f["msg"].replace("|", "\\|").replace("\n", " ")
-            if len(msg) > 200:
-                msg = msg[:197] + "..."
-            rule_short = strip_rule_prefix(f["rule"])
-            loc = _render_link(f["file"], f["line"], repo, sha, server)
-            out.append(
-                f"| {label} | `{rule_short}` | {loc} | {msg} |"
-            )
 
-    summary = "\n".join(out) + "\n"
-    if summary_path:
-        with open(summary_path, "a", encoding="utf-8") as fh:
-            fh.write(summary)
+def _render_breakdowns(
+    level_counts: Counter[str], rule_counts: Counter[str]
+) -> list[str]:
+    """Render the counts-by-severity and counts-by-rule tables."""
+    out = ["## Counts by severity", "", "| Severity | Count |"]
+    out.append("| --- | ---: |")
+    for lvl in LEVEL_ORDER:
+        if lvl in level_counts:
+            out.append(f"| {LEVEL_LABEL.get(lvl, lvl)} | {level_counts[lvl]} |")
+    out.extend(["", "## Counts by rule", "", "| Rule | Count |"])
+    out.append("| --- | ---: |")
+    for rid, n in rule_counts.most_common():
+        out.append(f"| `{strip_rule_prefix(rid)}` | {n} |")
+    out.append("")
+    return out
 
+
+def _render_findings_table(findings: list[Finding], ctx: dict[str, Any]) -> list[str]:
+    """Render the detail table for the top findings."""
+    total = len(findings)
+    shown = findings[: ctx["top_n"]]
+    extra = total - len(shown)
+    heading = f"## Top {len(shown)} findings"
+    if extra > 0:
+        heading += f" (of {total}; {extra} more in SARIF)"
+    out = [heading, ""]
+    out.append("| Severity | Rule | Location | Message |")
+    out.append("| --- | --- | --- | --- |")
+    for f in shown:
+        label = LEVEL_LABEL.get(f["level"], f["level"])
+        msg = f["msg"].replace("|", "\\|").replace("\n", " ")
+        if len(msg) > MAX_MSG_LEN:
+            msg = msg[: MAX_MSG_LEN - 3] + "..."
+        rule_short = strip_rule_prefix(f["rule"])
+        loc = _render_link(f["file"], f["line"], ctx["repo"], ctx["sha"], ctx["server"])
+        out.append(f"| {label} | `{rule_short}` | {loc} | {msg} |")
+    return out
+
+
+def _print_console(
+    findings: list[Finding],
+    level_counts: Counter[str],
+    rule_counts: Counter[str],
+    top_n: int,
+) -> None:
+    """Print a compact grouped listing to the job log."""
+    total = sum(level_counts.values())
     print("::group::zizmor summary")
     by_level = {LEVEL_LABEL.get(k, k): v for k, v in level_counts.items()}
-    print(
-        f"Total: {total}  by-level: {by_level}  rules: {len(rule_counts)}"
-    )
+    print(f"Total: {total}  by-level: {by_level}  rules: {len(rule_counts)}")
     for f in findings[:top_n]:
         label = LEVEL_LABEL.get(f["level"], f["level"])
         loc_str = f["file"] + (f":{f['line']}" if f["line"] else "")
@@ -220,10 +244,15 @@ def summarise() -> int:
         print(f"  {label}  {rule_short:<28}  {loc_str}")
     print("::endgroup::")
 
-    # Workflow commands keep the full rule id in the title since
-    # GitHub shows them out of context (e.g. in PR file annotations).
-    # Property values are escaped per GitHub's workflow-command rules
-    # so ``,`` and ``:`` in titles or paths cannot break the format.
+
+def _emit_annotations(findings: list[Finding], top_n: int) -> None:
+    """Emit workflow-command annotations for the top findings.
+
+    The commands keep the full rule id in the title since GitHub shows
+    them out of context (e.g. in PR file annotations). Property values
+    are escaped per GitHub's workflow-command rules so ``,`` and ``:``
+    in titles or paths cannot break the format.
+    """
     for f in findings[:top_n]:
         cmd = WARN_CMD.get(f["level"], "warning")
         parts = []
@@ -233,11 +262,34 @@ def summarise() -> int:
             parts.append(f"line={f['line']}")
         if f["endline"] and f["endline"] != f["line"]:
             parts.append(f"endLine={f['endline']}")
-        title = f"zizmor: {f['rule']}"
-        parts.append(f"title={_escape_wf_property(title)}")
+        ann_title = f"zizmor: {f['rule']}"
+        parts.append(f"title={_escape_wf_property(ann_title)}")
         msg = f["msg"].replace("\n", " ").strip() or f["rule"]
         print(f"::{cmd} {','.join(parts)}::{_escape_wf_data(msg)}")
 
+
+def _write(lines: list[str], summary_path: str | None) -> None:
+    """Append the rendered markdown lines to the step summary file."""
+    if not summary_path:
+        return
+    with open(summary_path, "a", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
+
+
+def summarise() -> int:
+    """Read SARIF and write summary; return process exit code."""
+    ctx = _read_context()
+    findings, level_counts, rule_counts = _load_findings(ctx["sarif_path"])
+    total = sum(level_counts.values())
+
+    out = _render_header(total, ctx)
+    if total > 0:
+        out.extend(_render_breakdowns(level_counts, rule_counts))
+        out.extend(_render_findings_table(findings, ctx))
+    _write(out, ctx["summary_path"])
+
+    _print_console(findings, level_counts, rule_counts, ctx["top_n"])
+    _emit_annotations(findings, ctx["top_n"])
     return 0
 
 
