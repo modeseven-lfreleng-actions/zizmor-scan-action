@@ -13,10 +13,13 @@ Configuration is read from the environment:
 * ``ZIZMOR_TOP_N``        max findings to detail and annotate (default 10)
 * ``ZIZMOR_PERSONA``      persona label shown in the summary header
 * ``ZIZMOR_MIN_SEVERITY`` minimum severity label shown in the header
+* ``ZIZMOR_REPOSITORY``   owner/repo label override for summary links
+* ``ZIZMOR_SHA``          commit SHA override for summary links
 """
 
 import json
 import os
+import re
 import sys
 from collections import Counter
 from pathlib import Path
@@ -147,15 +150,53 @@ def _load_findings(
     return findings, level_counts, rule_counts
 
 
+# Owner: alphanumeric with inner hyphens/underscores (underscores
+# appear in Enterprise Managed User logins); no dots, no leading or
+# trailing separator. Repo: must not be all dots ("." / "..") so a
+# "valid" override can never URL-normalise into a different
+# blob-link path.
+_REPO_RE = re.compile(
+    r"^[A-Za-z0-9](?:[A-Za-z0-9_-]*[A-Za-z0-9])?"
+    r"/(?!\.+$)[A-Za-z0-9._-]+$"
+)
+_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
+
+
+def _label_overrides() -> tuple[str, str]:
+    """Read and validate the summary label override pair.
+
+    ``ZIZMOR_REPOSITORY`` and ``ZIZMOR_SHA`` override the ambient
+    GitHub values so summaries can label a checkout of a different
+    repository (for example in an organisation-wide scan matrix).
+    The pair applies atomically and each value must be well formed
+    (``owner/repo``; 7-40 hex-digit SHA): a partial or malformed
+    override would mislabel the summary or break its links, so it is
+    ignored with a warning.
+    """
+    repo = os.environ.get("ZIZMOR_REPOSITORY", "").strip()
+    sha = os.environ.get("ZIZMOR_SHA", "").strip()
+    if not repo and not sha:
+        return "", ""
+    if not (_REPO_RE.match(repo) and _SHA_RE.match(sha)):
+        print(
+            "::warning::ZIZMOR_REPOSITORY and ZIZMOR_SHA must be set"
+            " together as owner/repo and a 7-40 hex-digit commit SHA;"
+            " ignoring the override"
+        )
+        return "", ""
+    return repo, sha
+
+
 def _read_context() -> dict[str, Any]:
     """Collect configuration and repository context from the env."""
-    sha = os.environ.get("GITHUB_SHA", "")
+    repo_override, sha_override = _label_overrides()
+    sha = sha_override or os.environ.get("GITHUB_SHA", "")
     return {
         "sarif_path": Path(os.environ["ZIZMOR_SARIF"]),
         "top_n": int(os.environ.get("ZIZMOR_TOP_N", "10")),
         "summary_path": os.environ.get("GITHUB_STEP_SUMMARY"),
         "server": os.environ.get("GITHUB_SERVER_URL", "https://github.com"),
-        "repo": os.environ.get("GITHUB_REPOSITORY", ""),
+        "repo": repo_override or os.environ.get("GITHUB_REPOSITORY", ""),
         "sha": sha,
         "short_sha": sha[:7] if sha else "?",
         "persona": os.environ.get("ZIZMOR_PERSONA", "auditor"),

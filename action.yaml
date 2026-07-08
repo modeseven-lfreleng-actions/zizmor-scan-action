@@ -52,6 +52,23 @@ inputs:
     description: 'Upload the SARIF to code scanning from within this action.'
     required: false
     default: 'false'
+  summary-repository:
+    description: >-
+      owner/repo label for step-summary links; defaults to the
+      repository running the workflow. Set when the workspace holds a
+      checkout of a different repository. Applies only together with
+      summary-sha: a partial or malformed pair is ignored with a
+      warning.
+    required: false
+    default: ''
+  summary-sha:
+    description: >-
+      Commit SHA (7-40 hex digits) for step-summary links; defaults
+      to the workflow commit. Applies only together with
+      summary-repository: a partial or malformed pair is ignored with
+      a warning.
+    required: false
+    default: ''
 
 outputs:
   sarif-file:
@@ -177,6 +194,8 @@ runs:
         ZIZMOR_PERSONA: ${{ inputs.persona }}
         ZIZMOR_MIN_SEVERITY: ${{ inputs.min-severity }}
         ZIZMOR_TOP_N: '10'
+        ZIZMOR_REPOSITORY: ${{ inputs.summary-repository }}
+        ZIZMOR_SHA: ${{ inputs.summary-sha }}
         ACTION_PATH: ${{ github.action_path }}
       run: |
         set -euo pipefail
