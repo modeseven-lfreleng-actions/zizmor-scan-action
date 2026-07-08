@@ -94,15 +94,17 @@ pushes.
 
 <!-- markdownlint-disable MD013 -->
 
-| Name                | Default         | Description                                                                           |
-| ------------------- | --------------- | ------------------------------------------------------------------------------------- |
-| `persona`           | `auditor`       | zizmor persona controlling finding breadth: `regular`, `pedantic`, or `auditor`.      |
-| `min-severity`      | `informational` | Lowest severity reported: `unknown`, `informational`, `low`, `medium`, `high`.        |
-| `min-confidence`    | `""`            | Lowest confidence reported: `low`, `medium`, or `high`. Empty audits all confidences. |
-| `working-directory` | `.`             | Path within the workspace to audit.                                                   |
-| `zizmor-version`    | `""`            | Override the bundled pin with an explicit tag (for example `v1.25.2`).                |
-| `extra-args`        | `""`            | Extra raw arguments appended to the zizmor call.                                      |
-| `upload-sarif`      | `'false'`       | Publish SARIF to code scanning from the action: `'true'` or `'false'`.                |
+| Name                 | Default         | Description                                                                                   |
+| -------------------- | --------------- | --------------------------------------------------------------------------------------------- |
+| `persona`            | `auditor`       | zizmor persona controlling finding breadth: `regular`, `pedantic`, or `auditor`.              |
+| `min-severity`       | `informational` | Lowest severity reported: `unknown`, `informational`, `low`, `medium`, `high`.                |
+| `min-confidence`     | `""`            | Lowest confidence reported: `low`, `medium`, or `high`. Empty audits all confidences.         |
+| `working-directory`  | `.`             | Path within the workspace to audit.                                                           |
+| `zizmor-version`     | `""`            | Override the bundled pin with an explicit tag (for example `v1.25.2`).                        |
+| `extra-args`         | `""`            | Extra raw arguments appended to the zizmor call.                                              |
+| `upload-sarif`       | `'false'`       | Publish SARIF to code scanning from the action: `'true'` or `'false'`.                        |
+| `summary-repository` | `""`            | owner/repo label for step-summary links; takes effect when paired with a valid `summary-sha`. |
+| `summary-sha`        | `""`            | Commit SHA (7–40 hex digits) for step-summary links; pairs with `summary-repository`.         |
 
 <!-- markdownlint-enable MD013 -->
 
