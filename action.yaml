@@ -162,6 +162,7 @@ runs:
         EXTRA_ARGS: ${{ inputs.extra-args }}
         WORKDIR: ${{ inputs.working-directory }}
         ZIZMOR_BIN: ${{ steps.download.outputs.zizmor }}
+        RESOLVED_TAG: ${{ steps.resolve.outputs.tag }}
       run: |
         set -euo pipefail
         sarif="${GITHUB_WORKSPACE}/zizmor.sarif"
@@ -177,9 +178,59 @@ runs:
           args+=(--min-confidence "${MIN_CONFIDENCE}")
         fi
         args+=(--format sarif)
+        # Run zizmor without letting a non-zero exit abort the step, so a
+        # "no inputs collected" result can be told apart from a real
+        # failure. In SARIF mode zizmor never emits the finding exit codes
+        # (11-14), so the outcomes are 0 (clean), 1 (internal error),
+        # 2 (bad arguments) or 3 (no inputs). See zizmor's exit codes:
+        # https://docs.zizmor.sh/usage/#exit-codes
+        rc=0
         # Word-splitting of EXTRA_ARGS is intentional (passthrough).
         # shellcheck disable=SC2086
-        "${ZIZMOR_BIN}" "${args[@]}" ${EXTRA_ARGS} "${WORKDIR}" > "${tmp}"
+        "${ZIZMOR_BIN}" "${args[@]}" ${EXTRA_ARGS} "${WORKDIR}" \
+          > "${tmp}" || rc=$?
+        if [ "${rc}" -eq 3 ]; then
+          # No workflows, actions, or Dependabot config to audit (e.g. a
+          # docs-only or fixture repository). Treat the empty audit as a
+          # clean result: write a valid SARIF with zero findings so the
+          # summary, the caller's gate and any SARIF upload all see the
+          # repository as clean, instead of failing the whole run over a
+          # repository that has nothing to audit.
+          echo "::notice::zizmor collected no auditable inputs;" \
+            "reporting a clean (empty) result"
+          ver="${RESOLVED_TAG#v}"
+          # python3 is already required by this step, so synthesise the
+          # empty SARIF with it rather than adding a jq dependency.
+          # The heredoc body and its PY terminator are written at this
+          # run block's base indent. YAML strips that indent before bash
+          # sees the script, so the terminator ends up with no leading
+          # whitespace (which <<'PY' requires) and every Python line at
+          # column 0. Keep them at the base indent: if the block's
+          # indentation ever changes they must move with it, or the
+          # heredoc will not terminate. Each Python statement is
+          # top-level or a bracket continuation, so none needs indenting.
+          python3 - "${ver}" > "${tmp}" <<'PY'
+        import json, sys
+        v = sys.argv[1]
+        schema = ("https://docs.oasis-open.org/sarif/sarif/v2.1.0/"
+        "os/schemas/sarif-schema-2.1.0.json")
+        json.dump({
+        "$schema": schema,
+        "version": "2.1.0",
+        "runs": [{
+        "tool": {"driver": {
+        "name": "zizmor", "version": v, "semanticVersion": v,
+        "informationUri": "https://docs.zizmor.sh", "rules": []
+        }},
+        "invocations": [{"executionSuccessful": True}],
+        "results": []
+        }]
+        }, sys.stdout)
+        PY
+        elif [ "${rc}" -ne 0 ]; then
+          echo "::error::zizmor exited with code ${rc}" >&2
+          exit "${rc}"
+        fi
         python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "${tmp}"
         mv "${tmp}" "${sarif}"
         echo "sarif=${sarif}" >> "$GITHUB_OUTPUT"
