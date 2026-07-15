@@ -134,8 +134,27 @@ runs:
         archive="${work}/${asset}"
         bindir="${work}/bin"
         mkdir -p "${bindir}"
+        # Retry transient network failures. The default --retry only
+        # covers a fixed set of HTTP responses and, with
+        # --retry-connrefused, refused connections; it does NOT retry a
+        # mid-transfer reset such as "Recv failure: Connection reset by
+        # peer" (curl exit 35/56), which the org-wide scan hit
+        # intermittently against the releases CDN.
+        #
+        # --retry-all-errors extends the retry logic to every error and
+        # supersedes --retry-connrefused, but it needs curl >= 7.71.0.
+        # GitHub-hosted runners ship a newer curl; a self-hosted runner
+        # might not, so probe for the flag (an unknown option makes curl
+        # exit non-zero before --version prints) and fall back to
+        # --retry-connrefused when it is absent. Omitting --retry-delay
+        # keeps curl's default exponential backoff between attempts, so a
+        # flaky endpoint no longer fails the whole run.
+        retry_opt='--retry-connrefused'
+        if curl --retry-all-errors --version >/dev/null 2>&1; then
+          retry_opt='--retry-all-errors'
+        fi
         curl --fail --silent --show-error --location \
-          --retry 3 --retry-delay 2 --retry-connrefused \
+          --retry 5 "${retry_opt}" \
           --connect-timeout 10 --max-time 120 \
           -o "${archive}" "${url}"
         # Verify Sigstore provenance before trusting the binary.
